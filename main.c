@@ -220,6 +220,7 @@ void send_can_data(int can_socket) {
     frame.can_dlc = 4;
 for (int i = 0; i < NUM_BUTTONS; i++) {
 //frame.data[i] = read_button_state(buttons[i].gpio_pin);
+
 frame.data[i] = read_button_state(buttons[i].gpio_pin->gpio);
 
 }
@@ -233,6 +234,8 @@ void update_gui_with_received_data(int can_socket) {
     int inMotorTemperature;
     int inBatteryCurrent;
     int inBatteryTemperature;
+lv_meter_indicator_t *speed_ind;
+lv_obj_t *speedValue;
 
 
     struct can_frame frame;
@@ -280,7 +283,9 @@ void *button_thread_handler(void *arg)
 {
     while (1)
     {
-        read_button_state();
+        for (int i = 0; i < NUM_BUTTONS; i++) {
+    read_button_state(buttons[i].gpio_pin->gpio);
+}
         usleep(100000); // Așteptați 100 ms înainte de a verifica din nou
     }
     pthread_exit(NULL);
@@ -289,10 +294,12 @@ void *button_thread_handler(void *arg)
 int main(void)
 {
     //------------------------CAN-----------------------------------------------------------//
-can_init();
-    setup_buttons();
-    setup_interrupts();
-
+//can_init();
+    //setup_buttons();
+   // setup_interrupts();
+void can_init();
+void setup_buttons();
+void setup_interrupts();
 
     //--------------------------------------------------------------------------------------\\
     //****************************************INIT******************************************\\
