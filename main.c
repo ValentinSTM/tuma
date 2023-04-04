@@ -21,6 +21,7 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
+#include <math.h>
 
 /*/ Global objects*/
 static lv_obj_t *tabview;
@@ -218,7 +219,9 @@ void send_can_data(int can_socket) {
     frame.can_id = 0x7; // Assuming 0x7 as the message ID for button press states
     frame.can_dlc = 4;
 for (int i = 0; i < NUM_BUTTONS; i++) {
-frame.data[i] = read_button_state(buttons[i].gpio_pin);
+//frame.data[i] = read_button_state(buttons[i].gpio_pin);
+frame.data[i] = read_button_state(buttons[i].gpio_pin->gpio);
+
 }
 write(can_socket, &frame, sizeof(frame));
 // Add a delay between updates (500 ms)
@@ -240,7 +243,7 @@ void update_gui_with_received_data(int can_socket) {
             switch (frame.can_id) {
                  case 0x8:
                         inSpeed = frame.data[0];
-                        lv_meter_set_indicator_value(meter, lv_meter_indicator_t, inSpeed);
+                        lv_meter_set_indicator_value(meter, speed_ind , inSpeed);
                         lv_label_set_text_fmt(speedValue, "%d", inSpeed);
                         break;
                 case 0x2:
