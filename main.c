@@ -45,7 +45,7 @@ static lv_obj_t *batteryVoltage;
 
 
 /*/ CAN variables*/
-//int inSpeed; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
+int inSpeed; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
 //int inMotorTemperature; // Integer that takes input from CAN or whatever -> Motor temperature in °C
 
 
@@ -230,7 +230,7 @@ usleep(500000);
 }
 
 void update_gui_with_received_data(int can_socket) {
-    int inSpeed;
+    //int inSpeed;
     int inMotorTemperature;
     int inBatteryCurrent;
     int inBatteryTemperature;
