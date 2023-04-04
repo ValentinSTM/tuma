@@ -44,8 +44,8 @@ static lv_obj_t *batteryVoltage;
 
 
 /*/ CAN variables*/
-int inSpeed; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
-int inMotorTemperature; // Integer that takes input from CAN or whatever -> Motor temperature in °C
+//int inSpeed; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
+//int inMotorTemperature; // Integer that takes input from CAN or whatever -> Motor temperature in °C
 
 
 
@@ -106,7 +106,7 @@ Button buttons[NUM_BUTTONS];
 // Declare an input device interface object
 lv_indev_t * button1;
 lv_indev_t* label;
-bool read_button_state(void);
+bool read_button_state(int button_pin);
 
 
 int init_socketcan(const char *ifname) {
@@ -226,6 +226,12 @@ usleep(500000);
 }
 
 void update_gui_with_received_data(int can_socket) {
+    int inSpeed;
+    int inMotorTemperature;
+    int inBatteryCurrent;
+    int inBatteryTemperature;
+
+
     struct can_frame frame;
 
     while (1) {
@@ -234,7 +240,7 @@ void update_gui_with_received_data(int can_socket) {
             switch (frame.can_id) {
                  case 0x8:
                         inSpeed = frame.data[0];
-                        lv_meter_set_indicator_value(meter, speed_indicator, inSpeed);
+                        lv_meter_set_indicator_value(meter, lv_meter_indicator_t, inSpeed);
                         lv_label_set_text_fmt(speedValue, "%d", inSpeed);
                         break;
                 case 0x2:
@@ -265,6 +271,16 @@ void update_gui_with_received_data(int can_socket) {
             lv_label_set_text_fmt(powerUsage, "Power: %d W", inPower);
         }
     }
+}
+
+void *button_thread_handler(void *arg)
+{
+    while (1)
+    {
+        read_button_state();
+        usleep(100000); // Așteptați 100 ms înainte de a verifica din nou
+    }
+    pthread_exit(NULL);
 }
 
 int main(void)
@@ -565,7 +581,7 @@ can_init();
 }
 
 
-bool read_button_state(void)
+bool read_button_state(int button_pin)
 {
     for (int i = 0; i < NUM_BUTTONS; i++) {
             if (time(NULL) - last_button_time[i] > 1)
