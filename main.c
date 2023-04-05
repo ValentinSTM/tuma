@@ -119,6 +119,62 @@ lv_indev_t * button1;
 lv_indev_t* label;
 bool read_button_state(int button_pin);
 
+int send_can_frame(const char *ifname, struct can_frame *frame) {
+    int s;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if (s < 0) {
+        perror("Error while opening socket");
+        return -1;
+    }
+
+    strcpy(ifr.ifr_name, ifname);
+    ioctl(s, SIOCGIFINDEX, &ifr);
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("Error in socket bind");
+        return -2;
+    }
+
+    int nbytes = write(s, frame, sizeof(struct can_frame));
+    close(s);
+
+    return nbytes;
+}
+
+int receive_can_frame(const char *ifname, struct can_frame *frame) {
+    int s;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if (s < 0) {
+        perror("Error while opening socket");
+        return -1;
+    }
+
+    strcpy(ifr.ifr_name, ifname);
+    ioctl(s, SIOCGIFINDEX, &ifr);
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("Error in socket bind");
+        return -2;
+    }
+
+    int nbytes = read(s, frame, sizeof(struct can_frame));
+    close(s);
+
+    return nbytes;
+}
+
 
 int init_socketcan(const char *ifname) {
     int s;
@@ -143,37 +199,6 @@ int init_socketcan(const char *ifname) {
     }
 
     return s;
-}
-
-int send_can_frame(const char *ifname, struct can_frame *frame)
-{
-    int can_socket;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
-
-    if ((can_socket = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
-        perror("Error while opening socket");
-        return -1;
-    }
-
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(can_socket, SIOCGIFINDEX, &ifr);
-
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(can_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("Error in socket bind");
-        return -2;
-    }
-
-    if (write(can_socket, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
-        perror("Error writing to CAN socket");
-        return -3;
-    }
-
-    close(can_socket);
-    return 0;
 }
 
 
@@ -270,38 +295,6 @@ send_can_frame("can0", &frame);
 //write(can_socket, &frame, sizeof(frame));
 // Add a delay between updates (500 ms)
 usleep(500000);
-}
-
-int receive_can_frame(const char *ifname, struct can_frame *frame)
-{
-    int can_socket;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
-
-    if ((can_socket = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
-        perror("Error while opening socket");
-        return -1;
-    }
-
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(can_socket, SIOCGIFINDEX, &ifr);
-
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(can_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("Error in socket bind");
-        return -2;
-    }
-
-    int nbytes = read(can_socket, frame, sizeof(struct can_frame));
-    if (nbytes < 0) {
-        perror("Error reading from CAN socket");
-        return -3;
-    }
-
-    close(can_socket);
-    return nbytes;
 }
 
 
