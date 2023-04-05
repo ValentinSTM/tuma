@@ -119,6 +119,36 @@ lv_indev_t * button1;
 lv_indev_t* label;
 bool read_button_state(int button_pin);
 
+int open_can_socket(const char *ifname) {
+    int s;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("Error while opening socket");
+        return -1;
+    }
+
+    strcpy(ifr.ifr_name, ifname);
+    if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
+        perror("SIOCGIFINDEX");
+        close(s);
+        return -1;
+    }
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        close(s);
+        return -1;
+    }
+
+    return s;
+}
+
+
 int send_can_frame(const char *ifname, struct can_frame *frame) {
     int s;
     struct sockaddr_can addr;
@@ -176,7 +206,7 @@ int receive_can_frame(const char *ifname, struct can_frame *frame) {
 }
 
 
-int init_socketcan(const char *ifname) {
+/*int init_socketcan(const char *ifname) {
     int s;
     struct sockaddr_can addr;
     struct ifreq ifr;
@@ -199,7 +229,7 @@ int init_socketcan(const char *ifname) {
     }
 
     return s;
-}
+}*/
 
 
 void send_can_data(int can_socket) {
@@ -367,9 +397,30 @@ int main(void)
 //can_init();
     //setup_buttons();
    // setup_interrupts();
-void can_init();
+//void can_init();
+    //int can_socket = open_can_socket("can1");
+    //if (can_socket < 0) {
+        //printf("Failed to open CAN socket\n");
+        //return 1;
+    //}
+    //int can_socket = open_can_socket("can0");
+    //if (can_socket < 0) {
+        //printf("Failed to open CAN socket\n");
+        //return 1;
+    //}
+
+
+
+
+int can_socket = open_can_socket("can0");
+    if (can_socket < 0) {
+        printf("Failed to open CAN socket\n");
+        return 1;
+    }
+
 void setup_buttons();
 void setup_interrupts();
+
 
     //--------------------------------------------------------------------------------------\\
     //****************************************INIT******************************************\\
