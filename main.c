@@ -21,7 +21,17 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
+#define _USE_MATH_DEFINES
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #include <math.h>
+#include <linux/if.h>
+
+
+
+
 
 /*/ Global objects*/
 static lv_obj_t *tabview;
@@ -135,6 +145,38 @@ int init_socketcan(const char *ifname) {
     return s;
 }
 
+int send_can_frame(const char *ifname, struct can_frame *frame)
+{
+    int can_socket;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    if ((can_socket = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("Error while opening socket");
+        return -1;
+    }
+
+    strcpy(ifr.ifr_name, ifname);
+    ioctl(can_socket, SIOCGIFINDEX, &ifr);
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(can_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("Error in socket bind");
+        return -2;
+    }
+
+    if (write(can_socket, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+        perror("Error writing to CAN socket");
+        return -3;
+    }
+
+    close(can_socket);
+    return 0;
+}
+
+
 void send_can_data(int can_socket) {
     // Seed random number generator
     static int seeded = 0;
@@ -224,10 +266,44 @@ for (int i = 0; i < NUM_BUTTONS; i++) {
 frame.data[i] = read_button_state(buttons[i].gpio_pin->gpio);
 
 }
-write(can_socket, &frame, sizeof(frame));
+send_can_frame("can0", &frame);
+//write(can_socket, &frame, sizeof(frame));
 // Add a delay between updates (500 ms)
 usleep(500000);
 }
+
+int receive_can_frame(const char *ifname, struct can_frame *frame)
+{
+    int can_socket;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    if ((can_socket = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("Error while opening socket");
+        return -1;
+    }
+
+    strcpy(ifr.ifr_name, ifname);
+    ioctl(can_socket, SIOCGIFINDEX, &ifr);
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(can_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("Error in socket bind");
+        return -2;
+    }
+
+    int nbytes = read(can_socket, frame, sizeof(struct can_frame));
+    if (nbytes < 0) {
+        perror("Error reading from CAN socket");
+        return -3;
+    }
+
+    close(can_socket);
+    return nbytes;
+}
+
 
 void update_gui_with_received_data(int can_socket) {
     //int inSpeed;
@@ -241,7 +317,8 @@ lv_obj_t *speedValue;
     struct can_frame frame;
 
     while (1) {
-        int nbytes = read(can_socket, &frame, sizeof(frame));
+        int nbytes = receive_can_frame("can1", &frame);
+        //int nbytes = read(can_socket, &frame, sizeof(frame));
         if (nbytes > 0) {
             switch (frame.can_id) {
                  case 0x8:
@@ -511,7 +588,8 @@ void setup_interrupts();
     lv_anim_set_repeat_delay(&a, 100);
     lv_anim_set_playback_time(&a, 500);
     lv_anim_set_playback_delay(&a, 100);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_repeat_count(&a,1);
+    //lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_start(&a);
 
     // Add label under Meter
@@ -524,11 +602,11 @@ void setup_interrupts();
     static lv_obj_t *speedValue;
     speedValue = lv_label_create(tab1);
     lv_label_set_text_fmt(speedValue, "%d", inSpeed);
-    lv_obj_align_to(speedValue, labelkmt, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
+    lv_obj_align_to(speedValue, labelkmt, LV_ALIGN_OUT_BOTTOM_MID, 0, 50);
 
     label = lv_label_create(lv_scr_act());
     lv_label_set_text_fmt(label, "%d", inSpeed);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 30);
     
     // TAB 2
 
