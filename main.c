@@ -233,6 +233,7 @@ int receive_can_frame(const char *ifname, struct can_frame *frame) {
 
 
 void send_can_data(int can_socket) {
+
     // Seed random number generator
     static int seeded = 0;
     if (!seeded) {
@@ -325,6 +326,7 @@ send_can_frame("can0", &frame);
 //write(can_socket, &frame, sizeof(frame));
 // Add a delay between updates (500 ms)
 usleep(500000);
+//return NULL;
 }
 
 
@@ -377,6 +379,7 @@ lv_obj_t *speedValue;
             lv_label_set_text_fmt(powerUsage, "Power: %d W", inPower);
         }
     }
+    //return NULL;
 }
 
 void *button_thread_handler(void *arg)
@@ -709,6 +712,8 @@ void setup_interrupts();
         lv_timer_handler();
         usleep(5000);
     }
+    send_can_data(can_socket);
+    update_gui_with_received_data(can_socket);
 
 }
 
