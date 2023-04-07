@@ -2,24 +2,27 @@
 #include "lv_drivers/display/fbdev.h"
 #include "lvgl/demos/lv_demos.h"
 #include "lvgl/examples/lv_examples.h"
-#include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <libsoc_gpio.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <poll.h>
 #include <fcntl.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+
+#include <net/if.h>
+#include <linux/if.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <net/if.h>
+
 #include <linux/can.h>
 #include <linux/can/raw.h>
 
@@ -27,7 +30,7 @@
 /*/ Global objects*/
 static lv_obj_t *tabview;
 static lv_obj_t *tab_btns;
-static lv_group_t *groupBtn; // Group that can be traversed with a button (auto wrap around)
+// static lv_group_t *groupBtn; // Group that can be traversed with a button (auto wrap around)
 static int whichtab = 0;
 
 
@@ -38,11 +41,15 @@ static lv_obj_t *powerUsage;
 static lv_obj_t *currentUsage;
 static lv_obj_t *voltage;
 static lv_obj_t *meter;
+static lv_obj_t *speedValue;
 
-int inBattery; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
-int inPower; // Power in W from battery
+int inBattery; // Integer (percentage) that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
+int inPower; // Power in W from battery - calculated locally
 int inCurrent; // Current current usage from battery?
 int inVoltage; // Current voltage from battery 
+int speed; // Current speed
+int temperature; // Current temperature of the battery
+int error; // Error code
 
 /*/ Bluetooth tab objects*/
 static lv_obj_t *tab2;
@@ -93,10 +100,11 @@ Button buttons[NUM_BUTTONS];
 // Declare an input device interface object
 lv_indev_t * button1;
 lv_indev_t* label;
+
 bool read_button_state(void);
 
-//--------------------------------------------------------------------------------------\\
-//****************************************CAN******************************************\\
+/* ----------------------------------------------------------------------------------
+-----------------------------------CAN---------------------------------------------*/
 
 int open_can_socket(const char *ifname) {
     int s;
@@ -115,6 +123,7 @@ int open_can_socket(const char *ifname) {
         return -1;
     }
 
+    memset(&addr, 0, sizeof(addr));
     addr.can_family = AF_CAN;
     addr.can_ifindex = ifr.ifr_ifindex;
 
@@ -127,10 +136,57 @@ int open_can_socket(const char *ifname) {
     return s;
 }
 
+void *can_receive_thread(int s) {
+    struct can_frame frame;
+
+    while (1) {
+        // Read the incoming CAN frame
+        int nbytes = read(s, &frame, sizeof(struct can_frame));
+
+        if (nbytes < 0) {
+            perror("read");
+            pthread_exit(NULL);
+        }
+
+        // Process the received CAN frame
+        printf("Received CAN frame: ID = 0x%X, DLC = %d, Data = ", frame.can_id, frame.can_dlc);
+        if (nbytes > 0) {
+            switch (frame.can_id)
+            {
+                case 0x001:
+                    inVoltage = ((frame.data[0] << 8) | frame.data[1]);
+                    printf("inVoltage = 0x%X\n", inVoltage);
+                    inCurrent = ((frame.data[2] << 8) | frame.data[3]);
+                    printf("inCurrent = 0x%X\n", inCurrent);
+                    temperature = frame.data[4];
+                    printf("temperature = 0x%X\n", temperature); 
+                    // to be deleted
+                    int dummy = ((frame.data[5] << 16) |  (frame.data[6] << 8) | frame.data[7]);
+                    printf("dummy = 0x%X\n", dummy); 
+                    break;
+                case 0x002:
+                    speed = ((frame.data[0] << 8) | frame.data[1]);
+                    printf("speed = 0x%X\n", speed);
+                    error = frame.data[2];
+                    printf("error = 0x%X\n", error);
+            }
+        }
+        for (int i = 0; i < frame.can_dlc; i++)
+        {
+            printf("%02X ",frame.data[i]);
+            if (frame.data[i] <= 100) 
+            {
+                speed = frame.data[i];
+            }
+            }
+        printf("\r\n");
+    }
+}
+
 int main(void)
 {
-    //--------------------------------------------------------------------------------------\\
-    //****************************************INIT******************************************\\
+    /* ----------------------------------------------------------------------------------
+    -----------------------------------INIT--------------------------------------------*/
     /*LVGL init*/
     lv_init();
 
@@ -157,10 +213,10 @@ int main(void)
     lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x003a57), LV_PART_MAIN);
 
 
-    //******************************************INIT****************************************\\
+    /* ----------------------------------------------------------------------------------
+    -----------------------------------INIT--------------------------------------------*/
 
-
-    // ------------------------------- Init button devices ---------------------------------\\
+    /* ------------------------------- Init button devices ---------------------------------*/
  
     /*/static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);      //Basic initialization
@@ -169,8 +225,6 @@ int main(void)
     lv_indev_t * my_indev = lv_indev_drv_register(&indev_drv); // Check laterr *TODO*  */
     
 
-
-    //-----------------------------------------------------------------------------------------\\
 
     // Gradient --------------------------------------------------
     static lv_style_t gradientStyle;
@@ -223,7 +277,7 @@ int main(void)
         buttons[i].gpio_pin = libsoc_gpio_request(button_pins[i], LS_GPIO_GREEDY);
         libsoc_gpio_set_direction(buttons[i].gpio_pin, INPUT);
         buttons[i].button_index = i;
-        libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &read_button_state, &buttons[i]);
+        libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, (void *)&read_button_state, NULL);
     }
     //static lv_style_t largerFontStyle;
     //lv_style_init(&largerFontStyle);
@@ -341,7 +395,7 @@ int main(void)
     lv_anim_set_repeat_delay(&a, 100);
     lv_anim_set_playback_time(&a, 500);
     lv_anim_set_playback_delay(&a, 100);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_repeat_count(&a, 1);
     lv_anim_start(&a);
 
     // Add label under Meter
@@ -350,13 +404,34 @@ int main(void)
     lv_label_set_text_static(labelkmt, "Km/h");
     lv_obj_align(labelkmt, LV_ALIGN_BOTTOM_MID, 0, 0);
 
-
+    // Add speed value label under Meter
+    speedValue = lv_label_create(tab1);
+    lv_label_set_text_fmt(speedValue, "%d", 0);
+    lv_obj_align_to(speedValue, labelkmt, LV_ALIGN_OUT_BOTTOM_MID, -15, -70);
+    lv_obj_set_style_text_font(speedValue, LV_FONT_SPEED, 0);
 
     label = lv_label_create(lv_scr_act());
     lv_label_set_text_fmt(label, "%d", count);
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
 
-    
+     // CAN Init
+    const char *ifname = "can1";
+    int can_socket = open_can_socket(ifname);
+
+     // Create the CAN receive thread
+    pthread_t thread_id;
+    if (pthread_create(&thread_id, NULL, (void *)can_receive_thread, can_socket) != 0) {
+        perror("pthread_create");
+        return 1;
+    }
+
+    if (can_socket < 0) {
+        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifname);
+        return 1;
+    }
+
+    printf("CAN socket opened on interface %s\n", ifname);   
+
     // TAB 2
 
     bluetoothBtn = lv_btn_create(tab2);
@@ -364,26 +439,12 @@ int main(void)
     lv_obj_t * cont = lv_tabview_get_content(tab1);
     uint32_t tab_id = lv_obj_get_child_cnt(cont);
     printf("%d", tab_id);
-
-    // CAN Init
-    const char *ifname = "can1";
-    int can_socket = open_can_socket(ifname);
-
-    if (can_socket < 0) {
-        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifname);
-        return 1;
-    }
-
-    struct can_frame frame;
-
-    printf("CAN socket opened on interface %s\n", ifname);
    
     while(1)
     {
-        // CAN Read (delete after)
-        int nbytes = read(can_socket, &frame, sizeof(struct can_frame));
-        printf("CAN socket received bytes %d\n", nbytes);
-        
+
+
+
         // Check the state of each button
         for (int i = 0; i < NUM_BUTTONS; i++) {
             if (time(NULL) - last_button_time[i] > 0.01)
@@ -426,13 +487,22 @@ int main(void)
             }
         }
 
+        // update km/h text
+        lv_label_set_text_fmt(speedValue, "%d", speed);
+        // update meter needle position
+        lv_meter_set_indicator_value(meter, indic, speed);
+
+        lv_label_set_text_fmt(voltage, "Voltage: %d V", inVoltage);
+        lv_label_set_text_fmt(currentUsage, "Current: %d A", inCurrent);
+
         lv_scr_act();
         lv_tick_inc(5);
         lv_timer_handler();
         usleep(5000);
     }
 
-    // Close CAN socket
+    // Close CAN socket and thread
+    pthread_join(thread_id, NULL);
     close(can_socket);
 
 }
@@ -452,4 +522,5 @@ bool read_button_state(void)
                     return false;
             }
         }
+    return false;
 }
