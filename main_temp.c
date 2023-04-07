@@ -94,7 +94,8 @@ typedef struct {
 } Button;
 // Declare a variable to hold the count value
 uint32_t count = 10;
-Button buttons[NUM_BUTTONS];
+// to be deleted, declared in main
+// Button buttons[NUM_BUTTONS];
 
 
 // Declare an input device interface object
@@ -154,6 +155,7 @@ void *can_receive_thread(int s) {
             switch (frame.can_id)
             {
                 case 0x001:
+                {
                     inVoltage = ((frame.data[0] << 8) | frame.data[1]);
                     printf("inVoltage = 0x%X\n", inVoltage);
                     inCurrent = ((frame.data[2] << 8) | frame.data[3]);
@@ -163,23 +165,55 @@ void *can_receive_thread(int s) {
                     // to be deleted
                     int dummy = ((frame.data[5] << 16) |  (frame.data[6] << 8) | frame.data[7]);
                     printf("dummy = 0x%X\n", dummy); 
-                    break;
+                }
+                break;
                 case 0x002:
-                    speed = ((frame.data[0] << 8) | frame.data[1]);
+                {
+                    int newspeed = ((frame.data[0] << 8) | frame.data[1]);
+
+                    speed = newspeed / 1000;
                     printf("speed = 0x%X\n", speed);
+
                     error = frame.data[2];
                     printf("error = 0x%X\n", error);
+                }
+                break;
+                case 0x123:
+                {
+                    int button = frame.data[0];
+                    printf("button = 0x%X\n", button);
+                }
             }
         }
-        for (int i = 0; i < frame.can_dlc; i++)
+    }
+}
+
+void *can_send_thread(int s)
+{
+    uint8_t prev_button_state = 0;
+    uint8_t button_state = 2;
+    struct can_frame frame;
+
+    while (1)
+    {
+        //read_button_state();
+
+        if (button_state != prev_button_state)
         {
-            printf("%02X ",frame.data[i]);
-            if (frame.data[i] <= 100) 
+            frame.can_id = 0x123;
+            frame.can_dlc = 1;
+            frame.data[0] = button_state;
+
+            if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame))
             {
-                speed = frame.data[i];
+                perror("write");
+                exit(EXIT_FAILURE);
             }
-            }
-        printf("\r\n");
+
+         //   prev_button_state = button_state;
+        }
+
+        usleep(10000); // 10ms delay to prevent excessive CPU usage
     }
 }
 
@@ -277,7 +311,7 @@ int main(void)
         buttons[i].gpio_pin = libsoc_gpio_request(button_pins[i], LS_GPIO_GREEDY);
         libsoc_gpio_set_direction(buttons[i].gpio_pin, INPUT);
         buttons[i].button_index = i;
-        libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, (void *)&read_button_state, NULL);
+        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, (void *)&read_button_state, NULL);
     }
     //static lv_style_t largerFontStyle;
     //lv_style_init(&largerFontStyle);
@@ -415,22 +449,40 @@ int main(void)
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
 
      // CAN Init
-    const char *ifname = "can1";
-    int can_socket = open_can_socket(ifname);
+    const char *ifrecname = "can1";
+    int can_rec_socket = open_can_socket(ifrecname);
 
      // Create the CAN receive thread
-    pthread_t thread_id;
-    if (pthread_create(&thread_id, NULL, (void *)can_receive_thread, can_socket) != 0) {
-        perror("pthread_create");
+    pthread_t rec_thread_id;
+    if (pthread_create(&rec_thread_id, NULL, (void *)can_receive_thread, can_rec_socket) != 0) {
+        perror("pthread_create receive");
         return 1;
     }
 
-    if (can_socket < 0) {
-        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifname);
+    if (can_rec_socket < 0) {
+        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifrecname);
         return 1;
     }
 
-    printf("CAN socket opened on interface %s\n", ifname);   
+    printf("CAN socket opened on interface %s\n", ifrecname);
+
+    const char *ifsendname = "can0";
+    int can_send_socket = open_can_socket(ifsendname);
+
+    // Create the CAN send thread
+    pthread_t send_thread_id;
+    if (pthread_create(&send_thread_id, NULL, (void *)can_send_thread, can_send_socket) != 0) {
+        perror("pthread_create send");
+        return 1;
+    }
+
+    
+    if (can_send_socket < 0) {
+        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifsendname);
+        return 1;
+    }
+
+    printf("CAN socket opened on interface %s\n", ifsendname);
 
     // TAB 2
 
@@ -442,9 +494,6 @@ int main(void)
    
     while(1)
     {
-
-
-
         // Check the state of each button
         for (int i = 0; i < NUM_BUTTONS; i++) {
             if (time(NULL) - last_button_time[i] > 0.01)
@@ -502,9 +551,10 @@ int main(void)
     }
 
     // Close CAN socket and thread
-    pthread_join(thread_id, NULL);
-    close(can_socket);
-
+    pthread_join(rec_thread_id, NULL);
+    pthread_join(send_thread_id, NULL);
+    close(can_rec_socket);
+    close(can_send_socket);
 }
 
 
