@@ -84,6 +84,7 @@ static void scroll_begin_event(lv_event_t * e)
 
 #define NUM_BUTTONS 4
 int button_pins[NUM_BUTTONS] = {66, 67, 69, 68};
+int button_pressed[NUM_BUTTONS] = {0}; // The state of each button (1 = pressed, 0 = not pressed)
 time_t last_button_time[NUM_BUTTONS] = {0};
 #define DEBOUNCE_DELAY 0.01
 #define MAX_BUF 64
@@ -95,14 +96,15 @@ typedef struct {
 // Declare a variable to hold the count value
 uint32_t count = 10;
 // to be deleted, declared in main
-// Button buttons[NUM_BUTTONS];
+Button buttons[NUM_BUTTONS];
 
 
 // Declare an input device interface object
 lv_indev_t * button1;
 lv_indev_t* label;
 
-bool read_button_state(void);
+int read_button_state(void *arg);
+int my_callback(void *arg);
 
 /* ----------------------------------------------------------------------------------
 -----------------------------------CAN---------------------------------------------*/
@@ -180,8 +182,10 @@ void *can_receive_thread(int s) {
                 break;
                 case 0x123:
                 {
-                    int button = frame.data[0];
-                    printf("button = 0x%X\n", button);
+                    printf("button1 = 0x%X\n", frame.data[0]);
+                    printf("button2 = 0x%X\n", frame.data[1]);
+                    printf("button3 = 0x%X\n", frame.data[2]);
+                    printf("button4 = 0x%X\n", frame.data[3]);
                 }
             }
         }
@@ -190,19 +194,25 @@ void *can_receive_thread(int s) {
 
 void *can_send_thread(int s)
 {
-    uint8_t prev_button_state = 0;
-    uint8_t button_state = 2;
+    uint8_t prev_button_state[NUM_BUTTONS] = {0};
+
     struct can_frame frame;
 
     while (1)
     {
-        //read_button_state();
-
-        if (button_state != prev_button_state)
+        if (button_pressed[0] != prev_button_state[0] || 
+        button_pressed[1] != prev_button_state[1] || 
+        button_pressed[2] != prev_button_state[2] || 
+        button_pressed[3] != prev_button_state[3])
         {
             frame.can_id = 0x123;
-            frame.can_dlc = 1;
-            frame.data[0] = button_state;
+            frame.can_dlc = 4;
+            frame.data[0] = button_pressed[0];
+            frame.data[1] = button_pressed[1];
+            frame.data[2] = button_pressed[2];
+            frame.data[3] = button_pressed[3];
+            // send power
+            //frame.data[4] = power;
 
             if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame))
             {
@@ -210,10 +220,13 @@ void *can_send_thread(int s)
                 exit(EXIT_FAILURE);
             }
 
-         //   prev_button_state = button_state;
+            prev_button_state[0] = button_pressed[0];
+            prev_button_state[1] = button_pressed[1];
+            prev_button_state[2] = button_pressed[2];
+            prev_button_state[3] = button_pressed[3];
         }
 
-        usleep(10000); // 10ms delay to prevent excessive CPU usage
+        usleep(1000000); // 1 s delay to prevent excessive CPU usage
     }
 }
 
@@ -304,14 +317,16 @@ int main(void)
 
     // ---------------------------------------------------------------
 
-    Button buttons[NUM_BUTTONS];
+    //Button buttons[NUM_BUTTONS];
 
     // Initialize each button and register the interrupt handling function
     for (int i = 0; i < NUM_BUTTONS; i++) {
         buttons[i].gpio_pin = libsoc_gpio_request(button_pins[i], LS_GPIO_GREEDY);
         libsoc_gpio_set_direction(buttons[i].gpio_pin, INPUT);
         buttons[i].button_index = i;
-        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, (void *)&read_button_state, NULL);
+        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &read_button_state, NULL);
+        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &my_callback, &buttons[i]);
+
     }
     //static lv_style_t largerFontStyle;
     //lv_style_init(&largerFontStyle);
@@ -494,13 +509,13 @@ int main(void)
    
     while(1)
     {
-        // Check the state of each button
+        //Check the state of each button
         for (int i = 0; i < NUM_BUTTONS; i++) {
             if (time(NULL) - last_button_time[i] > 0.01)
             {
                 if (libsoc_gpio_get_level(buttons[i].gpio_pin) == HIGH)
                 {
-
+                    button_pressed[i] = true;
                     printf("Button %d was pressed\n", i+1);
                     last_button_time[i] = time(NULL);
                     count++;
@@ -533,6 +548,12 @@ int main(void)
                     printf("whichtab == %d\n", whichtab);
 
                 }
+                else if (libsoc_gpio_get_level(buttons[i].gpio_pin) == LOW)
+                {
+                    button_pressed[i] = false;
+                    // printf("Button %d was relesed\n", i+1);
+                    // last_button_time[i] = time(NULL);
+                }
             }
         }
 
@@ -558,19 +579,23 @@ int main(void)
 }
 
 
-bool read_button_state(void)
+int read_button_state(void *arg)
 {
+    printf("Interrupt\n");
     for (int i = 0; i < NUM_BUTTONS; i++) {
-            if (time(NULL) - last_button_time[i] > 1)
+            if (time(NULL) - last_button_time[i] > 0.01)
             {
+                last_button_time[i] = time(NULL);
+
                 if (libsoc_gpio_get_level(buttons[i].gpio_pin) == HIGH)
                 {
                     printf("Hello you've pressed me\n");
-                    return true;
+                    button_pressed[i] = true;
                 }
                 else
-                    return false;
+                {
+                    button_pressed[i] = false;
+                }
             }
         }
-    return false;
 }
