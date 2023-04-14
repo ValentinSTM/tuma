@@ -2,41 +2,35 @@
 #include "lv_drivers/display/fbdev.h"
 #include "lvgl/demos/lv_demos.h"
 #include "lvgl/examples/lv_examples.h"
-#include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <libsoc_gpio.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <poll.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+
+#include <net/if.h>
+#include <linux/if.h>
+#include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+
 #include <linux/can.h>
 #include <linux/can/raw.h>
-#include <net/if.h>
-#define _USE_MATH_DEFINES
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#include <math.h>
-#include <linux/if.h>
-
-
-
 
 
 /*/ Global objects*/
 static lv_obj_t *tabview;
 static lv_obj_t *tab_btns;
-static lv_group_t *groupBtn; // Group that can be traversed with a button (auto wrap around)
+// static lv_group_t *groupBtn; // Group that can be traversed with a button (auto wrap around)
 static int whichtab = 0;
 
 
@@ -47,26 +41,15 @@ static lv_obj_t *powerUsage;
 static lv_obj_t *currentUsage;
 static lv_obj_t *voltage;
 static lv_obj_t *meter;
-static lv_obj_t *motorTemperature;
-static lv_obj_t *batteryCurrent;
-static lv_obj_t *batteryTemperature;
-static lv_obj_t *batteryVoltage;
+static lv_obj_t *speedValue;
 
-
-
-/*/ CAN variables*/
-int inSpeed; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
-//int inMotorTemperature; // Integer that takes input from CAN or whatever -> Motor temperature in °C
-
-
-
-
-
-
-int inBattery; // Integer that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
-int inPower; // Power in W from battery
+int inBattery; // Integer (percentage) that takes input from CAN or whatever -> Preferably with a simple function that calculates the value in %
+int inPower; // Power in W from battery - calculated locally
 int inCurrent; // Current current usage from battery?
 int inVoltage; // Current voltage from battery 
+int speed; // Current speed
+int temperature; // Current temperature of the battery
+int error; // Error code
 
 /*/ Bluetooth tab objects*/
 static lv_obj_t *tab2;
@@ -101,6 +84,7 @@ static void scroll_begin_event(lv_event_t * e)
 
 #define NUM_BUTTONS 4
 int button_pins[NUM_BUTTONS] = {66, 67, 69, 68};
+int button_pressed[NUM_BUTTONS] = {0}; // The state of each button (1 = pressed, 0 = not pressed)
 time_t last_button_time[NUM_BUTTONS] = {0};
 #define DEBOUNCE_DELAY 0.01
 #define MAX_BUF 64
@@ -111,13 +95,19 @@ typedef struct {
 } Button;
 // Declare a variable to hold the count value
 uint32_t count = 10;
+// to be deleted, declared in main
 Button buttons[NUM_BUTTONS];
 
 
 // Declare an input device interface object
 lv_indev_t * button1;
 lv_indev_t* label;
-bool read_button_state(int button_pin);
+
+int read_button_state(void *arg);
+int my_callback(void *arg);
+
+/* ----------------------------------------------------------------------------------
+-----------------------------------CAN---------------------------------------------*/
 
 int open_can_socket(const char *ifname) {
     int s;
@@ -136,6 +126,7 @@ int open_can_socket(const char *ifname) {
         return -1;
     }
 
+    memset(&addr, 0, sizeof(addr));
     addr.can_family = AF_CAN;
     addr.can_ifindex = ifr.ifr_ifindex;
 
@@ -148,285 +139,101 @@ int open_can_socket(const char *ifname) {
     return s;
 }
 
-
-int send_can_frame(const char *ifname, struct can_frame *frame) {
-    int s;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
-
-    s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if (s < 0) {
-        perror("Error while opening socket");
-        return -1;
-    }
-
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(s, SIOCGIFINDEX, &ifr);
-
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("Error in socket bind");
-        return -2;
-    }
-
-    int nbytes = write(s, frame, sizeof(struct can_frame));
-    close(s);
-
-    return nbytes;
-}
-
-int receive_can_frame(const char *ifname, struct can_frame *frame) {
-    int s;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
-
-    s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if (s < 0) {
-        perror("Error while opening socket");
-        return -1;
-    }
-
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(s, SIOCGIFINDEX, &ifr);
-
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("Error in socket bind");
-        return -2;
-    }
-
-    int nbytes = read(s, frame, sizeof(struct can_frame));
-    close(s);
-
-    return nbytes;
-}
-
-
-/*int init_socketcan(const char *ifname) {
-    int s;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
-
-    s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if (s < 0) {
-        perror("Error while opening socket");
-        return -1;
-    }
-
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(s, SIOCGIFINDEX, &ifr);
-
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("Error in socket bind");
-        return -2;
-    }
-
-    return s;
-}*/
-
-
-void send_can_data(int can_socket) {
-
-    // Seed random number generator
-    static int seeded = 0;
-    if (!seeded) {
-        srand(time(NULL));
-        seeded = 1;
-    }
-
-    // Simulate race track using a sine wave for speed
-    static double track_position = 0.0;
-    track_position += 0.1;
-    if (track_position > 2 * M_PI) {
-        track_position = 0.0;
-    }
-    int motor_speed = 127 + (int)(127 * sin(track_position));
-
-    // Simulate temperature (0-100°C) based on motor speed
-    int motor_temperature = (int)(100.0 * motor_speed / 255.0);
-
-    // Simulate battery level (0-100%)
-    static int battery_level = 100;
-    int battery_drain_rate = (int)(motor_speed / 25.0);
-    battery_level -= battery_drain_rate;
-    if (battery_level < 0) {
-        battery_level = 0;
-    }
-
-    // Simulate MotorCurrent
-    int16_t motor_current = (int16_t)(motor_speed * 2);
-
-    // Simulate BatteryVoltage (0-500V)
-    uint16_t battery_voltage = 500 - (uint16_t)(motor_speed * 2);
-
-    // Simulate BatteryCurrent (-100 to 100 A)
-    int16_t battery_current = motor_current - 50;
-
-    // Simulate BatteryTemperature (0-50°C)
-    uint8_t battery_temperature = (uint8_t)(50.0 * battery_level / 100.0);
-
-    // MotorSpeed
-    struct can_frame frame;
-    memset(&frame, 0, sizeof(frame));
-    frame.can_id = 0x8;
-    frame.can_dlc = 1;
-    frame.data[0] = motor_speed;
-    write(can_socket, &frame, sizeof(frame));
-
-    // MotorCurrent
-    frame.can_id = 0x2;
-    frame.can_dlc = 2;
-    frame.data[0] = (motor_current >> 8) & 0xFF;
-    frame.data[1] = motor_current & 0xFF;
-    write(can_socket, &frame, sizeof(frame));
-
-    // MotorTemperature
-    frame.can_id = 0x3;
-    frame.can_dlc = 1;
-    frame.data[0] = motor_temperature;
-    write(can_socket, &frame, sizeof(frame));
-
-    // BatteryVoltage
-    frame.can_id = 0x4;
-    frame.can_dlc = 2;
-    frame.data[0] = (battery_voltage >> 8) & 0xFF;
-    frame.data[1] = battery_voltage & 0xFF;
-    write(can_socket, &frame, sizeof(frame));
-
-    // BatteryCurrent
-    frame.can_id = 0x5;
-    frame.can_dlc = 2;
-    frame.data[0] = (battery_current >> 8) & 0xFF;
-    frame.data[1] = battery_current & 0xFF;
-    write(can_socket, &frame, sizeof(frame));
-
-    // BatteryTemperature
-    frame.can_id = 0x6;
-    frame.can_dlc = 1;
-    frame.data[0] = battery_temperature;
-    write(can_socket, &frame, sizeof(frame));
-
-    // Button press states
-    frame.can_id = 0x7; // Assuming 0x7 as the message ID for button press states
-    frame.can_dlc = 4;
-for (int i = 0; i < NUM_BUTTONS; i++) {
-//frame.data[i] = read_button_state(buttons[i].gpio_pin);
-
-frame.data[i] = read_button_state(buttons[i].gpio_pin->gpio);
-
-}
-send_can_frame("can0", &frame);
-//write(can_socket, &frame, sizeof(frame));
-// Add a delay between updates (500 ms)
-usleep(500000);
-//return NULL;
-}
-
-
-void update_gui_with_received_data(int can_socket) {
-    //int inSpeed;
-    int inMotorTemperature;
-    int inBatteryCurrent;
-    int inBatteryTemperature;
-lv_meter_indicator_t *speed_ind;
-lv_obj_t *speedValue;
-
-
+void *can_receive_thread(int s) {
     struct can_frame frame;
 
     while (1) {
-        int nbytes = receive_can_frame("can1", &frame);
-        //int nbytes = read(can_socket, &frame, sizeof(frame));
+        // Read the incoming CAN frame
+        int nbytes = read(s, &frame, sizeof(struct can_frame));
+
+        if (nbytes < 0) {
+            perror("read");
+            pthread_exit(NULL);
+        }
+
+        // Process the received CAN frame
+        printf("Received CAN frame: ID = 0x%X, DLC = %d, Data = ", frame.can_id, frame.can_dlc);
         if (nbytes > 0) {
-            switch (frame.can_id) {
-                 case 0x8:
-                        inSpeed = frame.data[0];
-                        lv_meter_set_indicator_value(meter, speed_ind , inSpeed);
-                        lv_label_set_text_fmt(speedValue, "%d", inSpeed);
-                        break;
-                case 0x2:
-                    inCurrent = ((frame.data[0] << 8) | frame.data[1]);
-                    lv_label_set_text_fmt(currentUsage, "Current: %d A", inCurrent);
-                    break;
-                case 0x3:
-                    inMotorTemperature = frame.data[0];
-                    // Assuming a label for motor temperature exists
-                    lv_label_set_text_fmt(motorTemperature, "Motor Temperature: %d°C", inMotorTemperature);
-                    break;
-                case 0x4:
+            switch (frame.can_id)
+            {
+                case 0x001:
+                {
                     inVoltage = ((frame.data[0] << 8) | frame.data[1]);
-                    lv_label_set_text_fmt(voltage, "Voltage: %d V", inVoltage);
-                    break;
-                case 0x5:
-                    inBatteryCurrent = ((frame.data[0] << 8) | frame.data[1]);
-                    // Assuming a label for battery current exists
-                    lv_label_set_text_fmt(batteryCurrent, "Battery Current: %d A", inBatteryCurrent);
-                    break;
-                case 0x6:
-                    inBatteryTemperature = frame.data[0];
-                    // Assuming a label for battery temperature exists
-                    lv_label_set_text_fmt(batteryTemperature, "Battery Temperature: %d°C", inBatteryTemperature);
-                    break;
+                    printf("inVoltage = 0x%X\n", inVoltage);
+                    inCurrent = ((frame.data[2] << 8) | frame.data[3]);
+                    printf("inCurrent = 0x%X\n", inCurrent);
+                    temperature = frame.data[4];
+                    printf("temperature = 0x%X\n", temperature); 
+                    // to be deleted
+                    int dummy = ((frame.data[5] << 16) |  (frame.data[6] << 8) | frame.data[7]);
+                    printf("dummy = 0x%X\n", dummy); 
+                }
+                break;
+                case 0x002:
+                {
+                    int newspeed = ((frame.data[0] << 8) | frame.data[1]);
+
+                    speed = newspeed / 1000;
+                    printf("speed = 0x%X\n", speed);
+
+                    error = frame.data[2];
+                    printf("error = 0x%X\n", error);
+                }
+                break;
+                case 0x123:
+                {
+                    printf("button1 = 0x%X\n", frame.data[0]);
+                    printf("button2 = 0x%X\n", frame.data[1]);
+                    printf("button3 = 0x%X\n", frame.data[2]);
+                    printf("button4 = 0x%X\n", frame.data[3]);
+                }
             }
-            inPower = inVoltage * inCurrent/1000;//Divide with 1000 to show in Watt
-            lv_label_set_text_fmt(powerUsage, "Power: %d W", inPower);
         }
     }
-    //return NULL;
 }
 
-void *button_thread_handler(void *arg)
+void *can_send_thread(int s)
 {
+    uint8_t prev_button_state[NUM_BUTTONS] = {0};
+
+    struct can_frame frame;
+
     while (1)
     {
-        for (int i = 0; i < NUM_BUTTONS; i++) {
-    read_button_state(buttons[i].gpio_pin->gpio);
-}
-        usleep(100000); // Așteptați 100 ms înainte de a verifica din nou
+        if (button_pressed[0] != prev_button_state[0] || 
+        button_pressed[1] != prev_button_state[1] || 
+        button_pressed[2] != prev_button_state[2] || 
+        button_pressed[3] != prev_button_state[3])
+        {
+            frame.can_id = 0x123;
+            frame.can_dlc = 4;
+            frame.data[0] = button_pressed[0];
+            frame.data[1] = button_pressed[1];
+            frame.data[2] = button_pressed[2];
+            frame.data[3] = button_pressed[3];
+            // send power
+            //frame.data[4] = power;
+
+            if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame))
+            {
+                perror("write");
+                exit(EXIT_FAILURE);
+            }
+
+            prev_button_state[0] = button_pressed[0];
+            prev_button_state[1] = button_pressed[1];
+            prev_button_state[2] = button_pressed[2];
+            prev_button_state[3] = button_pressed[3];
+        }
+
+        usleep(1000000); // 1 s delay to prevent excessive CPU usage
     }
-    pthread_exit(NULL);
 }
 
 int main(void)
 {
-    //------------------------CAN-----------------------------------------------------------//
-//can_init();
-    //setup_buttons();
-   // setup_interrupts();
-//void can_init();
-    //int can_socket = open_can_socket("can1");
-    //if (can_socket < 0) {
-        //printf("Failed to open CAN socket\n");
-        //return 1;
-    //}
-    //int can_socket = open_can_socket("can0");
-    //if (can_socket < 0) {
-        //printf("Failed to open CAN socket\n");
-        //return 1;
-    //}
-
-
-
-
-int can_socket = open_can_socket("can0");
-    if (can_socket < 0) {
-        printf("Failed to open CAN socket\n");
-        return 1;
-    }
-
-void setup_buttons();
-void setup_interrupts();
-
-
-    //--------------------------------------------------------------------------------------\\
-    //****************************************INIT******************************************\\
+    /* ----------------------------------------------------------------------------------
+    -----------------------------------INIT--------------------------------------------*/
     /*LVGL init*/
     lv_init();
 
@@ -450,13 +257,15 @@ void setup_interrupts();
     lv_disp_drv_register(&disp_drv);
 
     /*Change the active screen's background color*/
-    lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x003a57), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x00000F), LV_PART_MAIN);
+//     scr = lv.scr_act()
+// scr.set_style_bg_color(lv.color_hex(0x0000F), lv.PART.MAIN)
 
 
-    //******************************************INIT****************************************\\
+    /* ----------------------------------------------------------------------------------
+    -----------------------------------INIT--------------------------------------------*/
 
-
-    // ------------------------------- Init button devices ---------------------------------\\
+    /* ------------------------------- Init button devices ---------------------------------*/
  
     /*/static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);      //Basic initialization
@@ -464,7 +273,7 @@ void setup_interrupts();
     indev_drv.read_cb = button_read;         
     lv_indev_t * my_indev = lv_indev_drv_register(&indev_drv); // Check laterr *TODO*  */
     
-    //-----------------------------------------------------------------------------------------\\
+
 
     // Gradient --------------------------------------------------
     static lv_style_t gradientStyle;
@@ -493,31 +302,33 @@ void setup_interrupts();
 
     // Shadow style --------------------------------------------
 
-    static lv_style_t shadowStyle;
-    lv_style_init(&shadowStyle);
+    // static lv_style_t shadowStyle;
+    // lv_style_init(&shadowStyle);
 
-    /*Set a background color and a radius*/
-    lv_style_set_radius(&shadowStyle, 5);
-    lv_style_set_bg_opa(&shadowStyle, LV_OPA_60);
-    lv_style_set_bg_color(&shadowStyle, lv_palette_darken(LV_PALETTE_GREY, 3));
+    // /*Set a background color and a radius*/
+    // lv_style_set_radius(&shadowStyle, 5);
+    // lv_style_set_bg_opa(&shadowStyle, LV_OPA_60);
+    // lv_style_set_bg_color(&shadowStyle, lv_palette_darken(LV_PALETTE_GREY, 4));
 
     /*Add a shadow*/
-    lv_style_set_shadow_width(&shadowStyle, 55);
-    lv_style_set_shadow_color(&shadowStyle, lv_palette_main(LV_PALETTE_BLUE));
+    // lv_style_set_shadow_width(&shadowStyle, 55);
+    // lv_style_set_shadow_color(&shadowStyle, lv_palette_main(LV_PALETTE_BLUE));
     //    lv_style_set_shadow_ofs_x(&style, 10);
     //    lv_style_set_shadow_ofs_y(&style, 20);
 
 
     // ---------------------------------------------------------------
 
-    Button buttons[NUM_BUTTONS];
+    //Button buttons[NUM_BUTTONS];
 
     // Initialize each button and register the interrupt handling function
     for (int i = 0; i < NUM_BUTTONS; i++) {
         buttons[i].gpio_pin = libsoc_gpio_request(button_pins[i], LS_GPIO_GREEDY);
         libsoc_gpio_set_direction(buttons[i].gpio_pin, INPUT);
         buttons[i].button_index = i;
-        libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &read_button_state, &buttons[i]);
+        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &read_button_state, NULL);
+        // libsoc_gpio_callback_interrupt(buttons[i].gpio_pin, &my_callback, &buttons[i]);
+
     }
     //static lv_style_t largerFontStyle;
     //lv_style_init(&largerFontStyle);
@@ -589,54 +400,60 @@ void setup_interrupts();
     lv_obj_clear_flag(lv_tabview_get_content(tabview), LV_OBJ_FLAG_SCROLLABLE);
 
 
-       meter = lv_meter_create(tab1);
+    meter = lv_meter_create(tab1);
     lv_obj_center(meter);
     lv_obj_set_size(meter, 400, 400);
+
+
+
+
+    /* Apply the gradient style to the meter */
+
+    // lv_obj_add_style(meter, LV_PART_MAIN, &gradientStyle);
 
     /*Add a scale first*/
     lv_meter_scale_t * scale = lv_meter_add_scale(meter);
     lv_meter_set_scale_ticks(meter, scale, 41, 2, 10, lv_palette_main(LV_PALETTE_GREY));
     lv_meter_set_scale_major_ticks(meter, scale, 8, 4, 15, lv_color_black(), 10);
 
-    lv_meter_indicator_t * speed_indicator;
+    lv_meter_indicator_t * indic;
 
     /*Add a blue arc to the start*/
-    speed_indicator = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_meter_set_indicator_start_value(meter, speed_indicator, 0);
-    lv_meter_set_indicator_end_value(meter, speed_indicator, 20);
+    indic = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_meter_set_indicator_start_value(meter, indic, 0);
+    lv_meter_set_indicator_end_value(meter, indic, 20);
 
     /*Make the tick lines blue at the start of the scale*/
-    speed_indicator = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_BLUE),
+    indic = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_BLUE),
                                     false, 0);
-    lv_meter_set_indicator_start_value(meter, speed_indicator, 0);
-    lv_meter_set_indicator_end_value(meter, speed_indicator, 20);
+    lv_meter_set_indicator_start_value(meter, indic, 0);
+    lv_meter_set_indicator_end_value(meter, indic, 20);
 
     /*Add a red arc to the end*/
-    speed_indicator = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_meter_set_indicator_start_value(meter, speed_indicator, 80);
-    lv_meter_set_indicator_end_value(meter, speed_indicator, 100);
+    indic = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_meter_set_indicator_start_value(meter, indic, 80);
+    lv_meter_set_indicator_end_value(meter, indic, 100);
 
     /*Make the tick lines red at the end of the scale*/
-    speed_indicator = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_RED), lv_palette_main(LV_PALETTE_RED), false,
+    indic = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_RED), lv_palette_main(LV_PALETTE_RED), false,
                                     0);
-    lv_meter_set_indicator_start_value(meter, speed_indicator, 80);
-    lv_meter_set_indicator_end_value(meter, speed_indicator, 100);
+    lv_meter_set_indicator_start_value(meter, indic, 80);
+    lv_meter_set_indicator_end_value(meter, indic, 100);
 
     /*Add a needle line indicator*/
-    speed_indicator = lv_meter_add_needle_line(meter, scale, 4, lv_palette_main(LV_PALETTE_GREY), -10);
+    indic = lv_meter_add_needle_line(meter, scale, 4, lv_palette_main(LV_PALETTE_GREY), -10);
 
     /*Create an animation to set the value*/
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_exec_cb(&a, set_value);
-    lv_anim_set_var(&a, speed_indicator);
+    lv_anim_set_var(&a, indic);
     lv_anim_set_values(&a, 0, 100);
     lv_anim_set_time(&a, 2000);
     lv_anim_set_repeat_delay(&a, 100);
     lv_anim_set_playback_time(&a, 500);
     lv_anim_set_playback_delay(&a, 100);
-    lv_anim_set_repeat_count(&a,1);
-    //lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_repeat_count(&a, 1);
     lv_anim_start(&a);
 
     // Add label under Meter
@@ -646,15 +463,51 @@ void setup_interrupts();
     lv_obj_align(labelkmt, LV_ALIGN_BOTTOM_MID, 0, 0);
 
     // Add speed value label under Meter
-    static lv_obj_t *speedValue;
     speedValue = lv_label_create(tab1);
-    lv_label_set_text_fmt(speedValue, "%d", inSpeed);
-    lv_obj_align_to(speedValue, labelkmt, LV_ALIGN_OUT_BOTTOM_MID, 0, 50);
+    lv_label_set_text_fmt(speedValue, "%d", 0);
+    lv_obj_align_to(speedValue, labelkmt, LV_ALIGN_OUT_BOTTOM_MID, -15, -70);
+    lv_obj_set_style_text_font(speedValue, LV_FONT_SPEED, 0);
 
     label = lv_label_create(lv_scr_act());
-    lv_label_set_text_fmt(label, "%d", inSpeed);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 30);
+    lv_label_set_text_fmt(label, "%d", count);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+     // CAN Init
+    const char *ifrecname = "can1";
+    int can_rec_socket = open_can_socket(ifrecname);
+
+     // Create the CAN receive thread
+    pthread_t rec_thread_id;
+    if (pthread_create(&rec_thread_id, NULL, (void *)can_receive_thread, can_rec_socket) != 0) {
+        perror("pthread_create receive");
+        return 1;
+    }
+
+    if (can_rec_socket < 0) {
+        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifrecname);
+        return 1;
+    }
+
+    printf("CAN socket opened on interface %s\n", ifrecname);
+
+    const char *ifsendname = "can0";
+    int can_send_socket = open_can_socket(ifsendname);
+
+    // Create the CAN send thread
+    pthread_t send_thread_id;
+    if (pthread_create(&send_thread_id, NULL, (void *)can_send_thread, can_send_socket) != 0) {
+        perror("pthread_create send");
+        return 1;
+    }
+
     
+    if (can_send_socket < 0) {
+        fprintf(stderr, "Failed to open CAN socket on interface %s\n", ifsendname);
+        return 1;
+    }
+
+    printf("CAN socket opened on interface %s\n", ifsendname);
+
     // TAB 2
 
     bluetoothBtn = lv_btn_create(tab2);
@@ -665,13 +518,13 @@ void setup_interrupts();
    
     while(1)
     {
-        // Check the state of each button
+        //Check the state of each button
         for (int i = 0; i < NUM_BUTTONS; i++) {
             if (time(NULL) - last_button_time[i] > 0.01)
             {
                 if (libsoc_gpio_get_level(buttons[i].gpio_pin) == HIGH)
                 {
-
+                    button_pressed[i] = true;
                     printf("Button %d was pressed\n", i+1);
                     last_button_time[i] = time(NULL);
                     count++;
@@ -704,32 +557,54 @@ void setup_interrupts();
                     printf("whichtab == %d\n", whichtab);
 
                 }
+                else if (libsoc_gpio_get_level(buttons[i].gpio_pin) == LOW)
+                {
+                    button_pressed[i] = false;
+                    // printf("Button %d was relesed\n", i+1);
+                    // last_button_time[i] = time(NULL);
+                }
             }
         }
+
+        // update km/h text
+        lv_label_set_text_fmt(speedValue, "%d", speed);
+        // update meter needle position
+        lv_meter_set_indicator_value(meter, indic, speed);
+
+        lv_label_set_text_fmt(voltage, "Voltage: %d V", inVoltage);
+        lv_label_set_text_fmt(currentUsage, "Current: %d A", inCurrent);
 
         lv_scr_act();
         lv_tick_inc(5);
         lv_timer_handler();
         usleep(5000);
     }
-    send_can_data(can_socket);
-    update_gui_with_received_data(can_socket);
 
+    // Close CAN socket and thread
+    pthread_join(rec_thread_id, NULL);
+    pthread_join(send_thread_id, NULL);
+    close(can_rec_socket);
+    close(can_send_socket);
 }
 
 
-bool read_button_state(int button_pin)
+int read_button_state(void *arg)
 {
+    printf("Interrupt\n");
     for (int i = 0; i < NUM_BUTTONS; i++) {
-            if (time(NULL) - last_button_time[i] > 1)
+            if (time(NULL) - last_button_time[i] > 0.01)
             {
+                last_button_time[i] = time(NULL);
+
                 if (libsoc_gpio_get_level(buttons[i].gpio_pin) == HIGH)
                 {
                     printf("Hello you've pressed me\n");
-                    return true;
+                    button_pressed[i] = true;
                 }
                 else
-                    return false;
+                {
+                    button_pressed[i] = false;
+                }
             }
         }
 }
